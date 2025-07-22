@@ -9,7 +9,7 @@ from langchain_huggingface import HuggingFaceEndpoint
 from langchain_huggingface.chat_models import ChatHuggingFace
 from langchain_community.vectorstores import FAISS
 from langchain.prompts import PromptTemplate
-from langchain_core.messages import HumanMessage, SystemMessage # Keep these imports, useful for direct chat models
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain.chains.combine_documents import create_stuff_documents_chain
 import tempfile
 import os
@@ -23,17 +23,14 @@ hf_api_token = os.getenv("HUGGINGFACEHUB_API_TOKEN")
 
 if not hf_api_token:
     st.error("Hugging Face API token not found. Please set the HUGGINGFACEHUB_API_TOKEN environment variable in your .env file.")
-    st.stop() # Stop the app if token is missing
+    st.stop()
 
-# Correct way to use ChatHuggingFace with HuggingFaceEndpoint for conversational models
 llm = ChatHuggingFace(
     llm=HuggingFaceEndpoint(
         repo_id="mistralai/Mistral-7B-Instruct-v0.2",
         temperature=0.1,
         max_new_tokens=500,
         huggingfacehub_api_token=hf_api_token,
-        # No 'task' parameter needed for HuggingFaceEndpoint when wrapped by ChatHuggingFace,
-        # as ChatHuggingFace handles the conversational aspect.
     )
 )
 
@@ -47,11 +44,9 @@ left_col, right_col = st.columns([2, 3])
 # --- Input: YouTube URL ---
 with st.sidebar:
     st.markdown("### 📺 Enter YouTube video URL")
-    # Changed default URL to a real, standard YouTube video URL for demonstration
     video_url = st.text_input("YouTube URL", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 
 # --- Prompt templates ---
-# Added a clear system instruction to the prompt for better LLM behavior
 summary_prompt = PromptTemplate.from_template(
     "You are a helpful assistant that summarizes video transcripts. Summarize the following video transcript in a concise paragraph:\n\n{context}"
 )
@@ -62,33 +57,22 @@ qa_prompt = PromptTemplate.from_template(
 
 # --- Helper: Extract video ID ---
 def extract_video_id(url):
-    """
-    Extracts the YouTube video ID from various YouTube URL formats.
-    """
     try:
         parsed_url = urlparse(url)
-        if parsed_url.hostname in ['www.youtube.com', 'youtube.com', 'm.youtube.com']:
-            # Standard watch URL: https://www.youtube.com/watch?v=VIDEO_ID
+        # Standard YouTube watch URL: https://www.youtube.com/watch?v=VIDEO_ID, www.youtube.com/watch?v=, etc.
+        if parsed_url.hostname in ['www.youtube.com', 'youtube.com', 'www.youtube.com', 'm.youtube.com']:
             query_v = parse_qs(parsed_url.query).get('v')
             if query_v:
                 return query_v[0]
+        # Shortened URL: https://youtu.be/VIDEO_ID
         elif parsed_url.hostname in ['youtu.be']:
-            # Shortened URL: https://youtu.be/VIDEO_ID
             return parsed_url.path[1:]
-        # Add a check for the specific googleusercontent.com format if it's truly expected
-        # However, for direct YouTube interaction, standard URLs are preferred.
-        # If the user input is *always* going to be in the googleusercontent.com format,
-        # you need to ensure that format maps to a real video ID.
-        # For now, assuming standard YouTube URLs are the primary input.
         return None
     except Exception:
         return None
 
 # --- Helper: Fetch transcript ---
 def fetch_transcript(video_id):
-    """
-    Fetches the transcript for a given YouTube video ID.
-    """
     try:
         transcript = YouTubeTranscriptApi.get_transcript(video_id)
         return " ".join([t['text'] for t in transcript])
@@ -97,21 +81,15 @@ def fetch_transcript(video_id):
 
 # --- Helper: Fetch metadata ---
 def fetch_video_metadata(video_id):
-    """
-    Fetches video title and thumbnail URL from YouTube.
-    """
     try:
-        # Use a real YouTube URL to fetch metadata
-        url = f"https://www.youtube.com/watch?v={video_id}"
+        url = f"https://www.youtube.com/watch?v={video_id}" # Use actual YouTube domain here
         response = requests.get(url)
-        response.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
+        response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
 
-        # Extract title using og:title meta tag
         title_tag = soup.find("meta", property="og:title")
         title = title_tag["content"] if title_tag else "Video Title Not Found"
 
-        # Extract thumbnail URL using og:image meta tag
         thumbnail_tag = soup.find("meta", property="og:image")
         thumbnail_url = thumbnail_tag["content"] if thumbnail_tag else ""
 
@@ -134,7 +112,6 @@ if video_url:
         with left_col:
             st.subheader(f"📺 {title}")
             if thumbnail_url:
-                # Using use_container_width as per Streamlit deprecation warning fix
                 st.image(thumbnail_url, use_container_width=True)
 
         with st.spinner("Fetching transcript..."):
@@ -142,55 +119,58 @@ if video_url:
 
         if transcript.startswith("Error"):
             st.error(transcript)
-        elif not transcript.strip(): # Check if transcript is empty after stripping whitespace
+        elif not transcript.strip():
             st.warning("Transcript fetched successfully, but it appears to be empty. This might happen for videos without captions.")
         else:
             st.success("Transcript fetched successfully!")
 
-            # Split into chunks
             text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
             docs = text_splitter.create_documents([transcript])
 
-            # Create embeddings (explicitly on CPU)
             embeddings = HuggingFaceEmbeddings(
                 model_name="sentence-transformers/all-MiniLM-L6-v2",
-                model_kwargs={'device': 'cpu'} # Explicitly set device to CPU
+                model_kwargs={'device': 'cpu'}
             )
 
             with tempfile.TemporaryDirectory() as tmpdirname:
-                # Create FAISS vector store from documents and embeddings
                 db = FAISS.from_documents(docs, embeddings)
                 retriever = db.as_retriever()
 
                 # --- Video Summary ---
                 with right_col:
                     with st.spinner("Summarizing the video..."):
-                        # create_stuff_documents_chain works well with PromptTemplate and LLMs/ChatModels
-                        summary_chain = create_stuff_documents_chain(llm=llm, prompt=summary_prompt)
-                        summary = summary_chain.invoke({"context": docs})
+                        try:
+                            summary_chain = create_stuff_documents_chain(llm=llm, prompt=summary_prompt)
+                            summary = summary_chain.invoke({"context": docs})
+                            st.markdown("### 📝 Video Summary")
+                            st.info(summary)
 
-                        st.markdown("### 📝 Video Summary")
-                        st.info(summary)
+                            st.download_button(
+                                label="📥 Download Summary as TXT",
+                                data=summary,
+                                file_name=f"{title}_summary.txt",
+                                mime="text/plain"
+                            )
+                        except Exception as e:
+                            st.error(f"Error generating summary: {e}. This might be a temporary API issue or prompt content problem.")
+                            summary = "Could not generate summary due to an error."
+                            st.info(summary) # Display a fallback message
 
-                        # Downloadable summary button
-                        st.download_button(
-                            label="📥 Download Summary as TXT",
-                            data=summary,
-                            file_name=f"{title}_summary.txt",
-                            mime="text/plain"
-                        )
 
                 # --- Q&A Section ---
                 st.markdown("### ❓ Ask a Question about the Video")
                 query = st.text_input("Your question:")
                 if query:
                     with st.spinner("Searching for answer..."):
-                        # Retrieve relevant documents based on the query
-                        relevant_docs = retriever.invoke(query)
-                        qa_chain = create_stuff_documents_chain(llm=llm, prompt=qa_prompt)
-                        response = qa_chain.invoke({
-                            "context": relevant_docs,
-                            "question": query
-                        })
-                        st.markdown("**Answer:**")
-                        st.success(response)
+                        try:
+                            relevant_docs = retriever.invoke(query)
+                            qa_chain = create_stuff_documents_chain(llm=llm, prompt=qa_prompt)
+                            response = qa_chain.invoke({
+                                "context": relevant_docs,
+                                "question": query
+                            })
+                            st.markdown("**Answer:**")
+                            st.success(response)
+                        except Exception as e:
+                            st.error(f"Error generating answer: {e}. This might be a temporary API issue or prompt content problem.")
+                            st.markdown("**Answer:** Could not generate answer due to an error.")
